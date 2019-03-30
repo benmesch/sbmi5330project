@@ -1,0 +1,316 @@
+---
+title: "Project Name Here"
+output: html_notebook
+---
+
+### Step 1: Download GEO Data for Radich (2006)
+* Start with some scripts as provided by GEO2R for the Radich (2006) microarray repositories. Will pull data for the Deininger (2009) repository afterwards.
+
+```{r, echo=FALSE}
+#Import relevant R libraries (hide this code block in final HTML export)
+suppressMessages(library(Biobase))
+suppressMessages(library(GEOquery))
+suppressMessages(library(limma))
+```
+
+#### GEOquery will return an "ExpressionSet" object, which holds the following:
+* experimentData - metadata on the whole experiment
+* assayData - large matrix of numeric expression values, accessed with expres()
+* phenoData - dataframe on each run (sample), accessed with pData()
+* featureData - dataframe on each of the 20k+ genes (ID can join to assay data, also has GO IDs, etc.)
+
+```{r}
+#Download GEO data for GSE4170 into a table "gset". 19MB
+suppressMessages(gset <- getGEO("GSE4170", GSEMatrix =TRUE, AnnotGPL=TRUE))
+gset
+```
+
+Perform some pre-processing of the data, formating column names and such. This code is largely taken from GEO2R, though I went through to make sure it's applicable here. 
+```{r}
+#(Code block will be hidden in final HTML of this notebook).
+```
+
+```{r, echo=FALSE}
+#Pull column names from the platform for this experiment: Rosetta/Merck Human 25k v2.2.1 microarray (GPL2029)
+#not used though, for this particular platform
+if (length(gset) > 1) idx <- grep("GPL2029", attr(gset, "names")) else idx <- 1
+gset <- gset[[idx]]
+
+# make proper column names to match toptable (most are ok like "ID", "GO.Function.ID". This escapes those character names just in case)
+fvarLabels(gset) <- make.names(fvarLabels(gset))
+
+# group names for all samples. 0 is control CD34, 1 is Accelerated Phase, 2 is Blast Crisis, 5 is Chronic Phase
+gsms <- paste0("000000111111111111222222222222222X22222X2222122122",
+        "22555555555555555555555552222255555555555555555555",
+        "5555555555555522222")
+sml <- c()
+for (i in 1:nchar(gsms)) { sml[i] <- substr(gsms,i,i) }
+
+# eliminate samples marked as "X"
+sel <- which(sml != "X")
+sml <- sml[sel]
+gset <- gset[ ,sel]
+
+# log2 transform. code provided by default by GEO2R, but I think the Radich 2006 is already log2, so this doesnt do anything to the Radich 2006 expression values. Commenting this out.
+#ex <- exprs(gset)
+#qx <- as.numeric(quantile(ex, c(0., 0.25, 0.5, 0.75, 0.99, 1.0), na.rm=T))
+#LogC <- (qx[5] > 100) ||
+#          (qx[6]-qx[1] > 50 && qx[2] > 0) ||
+#          (qx[2] > 0 && qx[2] < 1 && qx[4] > 1 && qx[4] < 2)
+#if (LogC) { ex[which(ex <= 0)] <- NaN
+#  exprs(gset) <- log2(ex) }
+
+# BEN: originally, this stuff was done right before building the linear models with limma. Im moving it up here because I want to do lots of model builds, but the initial "paste(G" here kept prepending "G" to the group names in gset$description!
+# set up the data and proceed with analysis. Create a category list (R-speak: "level") and assign to gset$description by user-defined group. Next, save a model.matrix where each row is a sample and each column is a flag to show membership in one of the user-defined groups.Will use this "design" model.matrix later in linear modeling block
+sml <- paste("G", sml, sep="")    # set group names
+fl <- as.factor(sml)
+gset$description <- fl #at first, all gset$description were just "Chonic Myelogenous Leukemia". Set to G0-G5.
+design <- model.matrix(~ description + 0, gset)
+colnames(design) <- levels(fl)
+```
+
+```{r}
+#phenotypes data (metadata) on the first 10 samples
+pData(gset)[1:10,c("title","geo_accession","description.1","description.2",  "data_row_count")]
+```
+
+```{r}
+#example numeric expression data for 7 genes in each of the first 5 samples
+exprs(gset)[1:7,1:5]
+```
+
+
+
+Use limma (lmFit, from Bioconductor) to fit linear model for each gene (fit expression data, use the model matrix.)
+Then build on the initial model into a contrasts model, with empirical Bayes test statistics: 
+
+Input the lmFit and the makeContrasts 4x4 matrix into "contrasts.fit", which will estimate coefficients and standard errors for the contrasts. Use eBayes to calculate t-statistics, F-statistics by empirical Bayes moderation.
+This "fit2" model will save statistics for each gene, for each of the 4 comparisons (so it's a 20k x 4 matrix).
+
+I think "topTable" only retrieves the first column (which would be G5 to G0 comparison here.)
+```{r}
+#build a linear model... 
+fit <- lmFit(gset, design)
+cont.matrix <- makeContrasts(G5-G0, G1-G0, G2-G0, G2-G1, G5-G2, levels=design) #for 4 groups: 0,1,2,5. 
+#^I think it is here you can group Blast Crisis and Accelerated groups into one and compare vs. control group!
+fit2 <- contrasts.fit(fit, cont.matrix)
+fit2 <- eBayes(fit2, 0.01)
+tT <- topTable(fit2, adjust="fdr", sort.by="B", number=250) #sort by the lods or B-statistic
+```
+
+### Top 250 Most Differentially Expressed Genes in Pairwise Group Comparisons
+View data for the 250 most statistically relevant genes that were differentially expressed in the following groups:
+* 0 is control CD34
+* 1 is Accelerated Phase
+* 2 is Blast Crisis
+* 5 is Chronic Phase
+
+This first round, I only did 5 pairwise contrasts for the following:
+G5 and G0 (chronic and control)
+G1 and G0 (accelerated and control)
+G2 and G0 (crisis and control)
+G2 and G1 (crisis vs accelerated. not expected to be largely different)
+G5 and G2 (chronic and blast crisis, least and most advanced disease states)
+
+```{r}
+#by default, top table saves a dataframe with all columns of the gene feature data in the expression dataset. 
+#subset top table here down to only the columns we care about:
+subset(tT, select=c("P.Value","Gene.symbol","G5...G0","G1...G0","G2...G0","G2...G1","G5...G2","AveExpr","GO.Process"))
+```
+
+Next, look at actual values for GAK in the 4 populations. 
+
+Is there a difference if we just do makeContrasts with 2 of the groups, instead of 4? (does the TopTable output differently for only 2 groups instead of 4?)
+  ^Then, maybe see if we should be splitting by CD34 vs blast crises only. And then maybe joining AP and BC together into a single group? Findings from first three will tell, hopefully, how to create better plots to show the differences there.
+
+
+
+Later:
+List the top 250 most (something) genes. GAK is p53 downstream! One of the biological processes for GAK is listed as Cell Cycle. I wonder . http://bioconductor.org/packages/release/bioc/vignettes/clusterProfiler/inst/doc/clusterProfiler.html#supported-ontologiespathways 
+
+Finally, see if can use a bioconductor package, such as clusterProfiler, to group the data into category by GO Biological process. IDK how I can split into "pathways" like "p53 related",etc. though. ClusterProfiler has nice visualizations, would be nice not to have to code those myself. 
+
+```{r}
+write.table(head(tT[1:10,], file=stdout(), row.names=FALSE, sep="\t"))
+```
+
+Look up info on the top gene, GAK:
+
+```{r paged.print=FALSE}
+#transpose the feature (gene) data for the GAK gene...
+t(gset@featureData@data[which(gset@featureData@data[["Gene.symbol"]] == "GAK")
+                        ,c("ID","Gene.symbol","Gene.title","Chromosome.location","GO.Process")])
+```
+
+
+```{r}
+
+################################################################
+#   Boxplot for selected GEO samples
+#library(Biobase)
+#library(GEOquery)
+
+# load series and platform data from GEO
+
+suppressMessages(gset <- getGEO("GSE4170", GSEMatrix =TRUE, getGPL=FALSE))
+if (length(gset) > 1) idx <- grep("GPL2029", attr(gset, "names")) else idx <- 1
+gset <- gset[[idx]]
+
+# group names for all samples in a series
+gsms <- paste0("000000111111111111222222222222222X22222X2222122122",
+        "22555555555555555555555552222255555555555555555555",
+        "5555555555555522222")
+sml <- c()
+for (i in 1:nchar(gsms)) { sml[i] <- substr(gsms,i,i) }
+sml <- paste("G", sml, sep="") #set group names
+
+# eliminate samples marked as "X"
+sel <- which(sml != "X")
+sml <- sml[sel]
+gset <- gset[ ,sel]
+
+# order samples by group
+ex <- exprs(gset)[ , order(sml)]
+sml <- sml[order(sml)]
+fl <- as.factor(sml)
+labels <- c("cd","ap","bc","resistant","responder","chronic")
+
+# set parameters and draw the plot
+palette(c("#dfeaf4","#f4dfdf","#f2cb98","#dfeaf4","#f4dfdf","#dfeaf4", "#AABBCC"))
+dev.new(width=4+dim(gset)[[2]]/5, height=6)
+par(mar=c(2+round(max(nchar(sampleNames(gset)))/2),4,2,1))
+title <- paste ("GSE4170", '/', annotation(gset), " selected samples", sep ='')
+boxplot(ex[,1:20], boxwex=0.6, notch=T, main=title, outline=FALSE, las=2, col=fl) #ben: only take first 20 columns
+legend("topleft", labels, fill=palette(), bty="n")
+```
+
+
+
+
+```{r}
+
+# set parameters and draw the plot
+palette(c("#dfeaf4","#f4dfdf","#f2cb98", "#AABBCC"))
+dev.new(width=4+dim(gset)[[2]]/5, height=6)
+par(mar=c(2+round(max(nchar(sampleNames(gset)))/2),4,2,1))
+title <- paste ("GSE4170", '/', annotation(gset), " selected samples", sep ='')
+boxplot(ex[,0:20], boxwex=0.6, notch=T, main=title, outline=FALSE, las=2, col=fl) #ben: only take first 20 columns
+legend("topleft", labels, fill=palette(), bty="n")
+
+```
+
+
+
+
+### Step 2: Repeat the analysis for the other study
+
+
+
+```{r}
+# Version info: R 3.2.3, Biobase 2.30.0, GEOquery 2.40.0, limma 3.26.8
+# R scripts generated  Thu Mar 28 05:38:05 EDT 2019
+
+################################################################
+#   Differential expression analysis with limma
+library(Biobase)
+library(GEOquery)
+library(limma)
+
+# load series and platform data from GEO
+
+gset <- getGEO("GSE14671", GSEMatrix =TRUE, AnnotGPL=TRUE)
+if (length(gset) > 1) idx <- grep("GPL570", attr(gset, "names")) else idx <- 1
+gset <- gset[[idx]]
+
+# make proper column names to match toptable 
+fvarLabels(gset) <- make.names(fvarLabels(gset))
+
+# group names for all samples
+gsms <- "33333333333344444444444444444444444433333344444444444444444"
+sml <- c()
+for (i in 1:nchar(gsms)) { sml[i] <- substr(gsms,i,i) }
+
+# log2 transform
+ex <- exprs(gset)
+qx <- as.numeric(quantile(ex, c(0., 0.25, 0.5, 0.75, 0.99, 1.0), na.rm=T))
+LogC <- (qx[5] > 100) ||
+          (qx[6]-qx[1] > 50 && qx[2] > 0) ||
+          (qx[2] > 0 && qx[2] < 1 && qx[4] > 1 && qx[4] < 2)
+if (LogC) { ex[which(ex <= 0)] <- NaN
+  exprs(gset) <- log2(ex) }
+
+# set up the data and proceed with analysis
+sml <- paste("G", sml, sep="")    # set group names
+fl <- as.factor(sml)
+gset$description <- fl
+design <- model.matrix(~ description + 0, gset)
+colnames(design) <- levels(fl)
+fit <- lmFit(gset, design)
+cont.matrix <- makeContrasts(G4-G3, levels=design)
+fit2 <- contrasts.fit(fit, cont.matrix)
+fit2 <- eBayes(fit2, 0.01)
+tT <- topTable(fit2, adjust="fdr", sort.by="B", number=250)
+
+
+```
+```{r}
+
+tT <- subset(tT, select=c("ID","adj.P.Val","P.Value","Gene.symbol","Gene.title","Gene.ID","GO.Function","GO.Process"))
+write.table(head(tT, file=stdout(), row.names=F, sep="\t"))
+```
+
+
+the "profile graph" didn't quite work as nicely (the Radich study, just had to enter one of the internal gene IDs). Here, it required opening a spearate file to look for the ID to profile.\
+
+"This tab allows you to view a specific gene expression profile graph by entering the corresponding identifier from the ID column of the Platform record. This feature does not perform any calculations; it merely displays the expression values of the gene across Samples. Sample groups may or may not be defined for this feature to work."
+
+
+```{r}
+
+################################################################
+#   Boxplot for selected GEO samples
+library(Biobase)
+library(GEOquery)
+
+# load series and platform data from GEO
+
+gset <- getGEO("GSE14671", GSEMatrix =TRUE, getGPL=FALSE)
+if (length(gset) > 1) idx <- grep("GPL570", attr(gset, "names")) else idx <- 1
+gset <- gset[[idx]]
+
+# group names for all samples in a series
+gsms <- "33333333333344444444444444444444444433333344444444444444444"
+sml <- c()
+for (i in 1:nchar(gsms)) { sml[i] <- substr(gsms,i,i) }
+sml <- paste("G", sml, sep="")  #set group names
+
+# order samples by group
+ex <- exprs(gset)[ , order(sml)]
+sml <- sml[order(sml)]
+fl <- as.factor(sml)
+labels <- c("cd","ap","bc","resistant","responder")
+
+
+```
+
+```{r}
+
+# set parameters and draw the plot
+palette(c("#dfeaf4","#f4dfdf","#f2cb98","#dfeaf4","#f4dfdf", "#AABBCC"))
+dev.new(width=4+dim(gset)[[2]]/5, height=6)
+par(mar=c(2+round(max(nchar(sampleNames(gset)))/2),4,2,1))
+title <- paste ("GSE14671", '/', annotation(gset), " selected samples", sep ='')
+boxplot(ex, boxwex=0.6, notch=T, main=title, outline=FALSE, las=2, col=fl)
+legend("topleft", labels, fill=palette(), bty="n")
+```
+
+
+So, both datasets are loaded. They total less than 80MB each. Would be more interesting to eventually get gene-level info (splits by funcitonal pathway,etc).
+
+But first step is to aggregate the 2 datasets together. Questions to ask:
+are the ranges and distributions the same for both datasets, roughly? Do the 2 populations look similar in terms of value range or even distribution (bimodal, normal, etc)? *If not very similar... is there similarity WITHIN the populations of one study? or is the population within a study as ~heterogeneious as when compared 'across' studies?
+
++do i need to normalize the ranges or what? to get similaris distributions...?
+
+NExt, are the "top 250" genes identified by the GEO2R default comparison... how similar is the "top 250" lists for the 2 studies? 
+*This will lead naturally into a categorization of the genes in the 3 main pathways of interest. May also want to see highly expressed genes vs. normal patient levels (which should... highlight more genes that are members of the 3 pathways, id think)
