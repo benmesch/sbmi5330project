@@ -3,7 +3,16 @@ title: "Project Name Here"
 output: html_notebook
 ---
 
-### Step 1: Download GEO Data for Radich (2006)
+Preliminary goals:
+Familiarize with the GEOquery and BioConductor data structure for microarray expression data. 
+Explore significantly differing genes using limma contrasts, then plot expression profiles for the top genes.
+Review original paper for more info about the data samples (some samples weren't used, some should be excluded due to not being clearly in an advanced state [remission cases, etc.])
+For the top genes, plot common pathways or biologic function (using ClusterProfiler?. http://bioconductor.org/packages/release/bioc/vignettes/clusterProfiler/inst/doc/clusterProfiler.html#go-classification )
+
+Next: see if can recreate Radich' conclusions, which compared chronic with accelerated + blast crisis (subtract healthy CD34+ from all disease samples); identifying the 'phase reporter' set of genes.
+
+## Analyzing Microarray Data for Radich (2006)
+### Step 1: Download and format GEO Data with GEO2R
 * Start with some scripts as provided by GEO2R for the Radich (2006) microarray repositories. Will pull data for the Deininger (2009) repository afterwards.
 
 ```{r, echo=FALSE}
@@ -25,7 +34,13 @@ suppressMessages(gset <- getGEO("GSE4170", GSEMatrix =TRUE, AnnotGPL=TRUE))
 gset
 ```
 
-Perform some pre-processing of the data, formating column names and such. This code is largely taken from GEO2R, though I went through to make sure it's applicable here. 
+The microarray expression values range from -2 to +2. With the median at 00.54: 
+```{r}
+quantile(exprs(gset), c(0., 0.25, 0.5, 0.75, 0.99, 1.0), na.rm=T)
+```
+
+
+Perform some pre-processing of the data, formating column names and such. This code is largely taken from GEO2R, though I went through to make sure it's applicable here. Repurpose the "description" slot (attribute) to categorize the samples into user-defined groups (I chose these myself in the GEO2R web tool).
 ```{r}
 #(Code block will be hidden in final HTML of this notebook).
 ```
@@ -39,10 +54,15 @@ gset <- gset[[idx]]
 # make proper column names to match toptable (most are ok like "ID", "GO.Function.ID". This escapes those character names just in case)
 fvarLabels(gset) <- make.names(fvarLabels(gset))
 
-# group names for all samples. 0 is control CD34, 1 is Accelerated Phase, 2 is Blast Crisis, 5 is Chronic Phase
-gsms <- paste0("000000111111111111222222222222222X22222X2222122122",
-        "22555555555555555555555552222255555555555555555555",
-        "5555555555555522222")
+# group names for all samples. 0 is control CD34, 1 is Chronic Phase, 2 is Accelerated Phase, 3 is Blast Crisis
+gsms <- paste0("000000222222222222333333333333333X33333X3333233233",
+               "33111111111111111111111113333311111111111111111111",
+               "1111111111111133333")
+
+#old: 0 is control CD34, 1 is Accelerated Phase, 2 is Blast Crisis, 5 is Chronic Phase
+#gsms <- paste0("000000111111111111222222222222222X22222X2222122122",
+#        "22555555555555555555555552222255555555555555555555",
+#        "5555555555555522222")
 sml <- c()
 for (i in 1:nchar(gsms)) { sml[i] <- substr(gsms,i,i) }
 
@@ -64,14 +84,15 @@ gset <- gset[ ,sel]
 # set up the data and proceed with analysis. Create a category list (R-speak: "level") and assign to gset$description by user-defined group. Next, save a model.matrix where each row is a sample and each column is a flag to show membership in one of the user-defined groups.Will use this "design" model.matrix later in linear modeling block
 sml <- paste("G", sml, sep="")    # set group names
 fl <- as.factor(sml)
-gset$description <- fl #at first, all gset$description were just "Chonic Myelogenous Leukemia". Set to G0-G5.
+gset$description <- fl #at first, all gset$description were just "Chonic Myelogenous Leukemia". Set to G0-G5. 
+# ^ gset$description is the same as gset@phenoData@data (so this just relabels that column and uses the user-defined groups instead!)
 design <- model.matrix(~ description + 0, gset)
 colnames(design) <- levels(fl)
 ```
 
 ```{r}
 #phenotypes data (metadata) on the first 10 samples
-pData(gset)[1:10,c("title","geo_accession","description.1","description.2",  "data_row_count")]
+pData(gset)[1:10,c("title","geo_accession","description","description.1",  "data_row_count")]
 ```
 
 ```{r}
@@ -79,8 +100,7 @@ pData(gset)[1:10,c("title","geo_accession","description.1","description.2",  "da
 exprs(gset)[1:7,1:5]
 ```
 
-
-
+### Step 2: Fit to a linear model, Pairwise Differential Expression
 Use limma (lmFit, from Bioconductor) to fit linear model for each gene (fit expression data, use the model matrix.)
 Then build on the initial model into a contrasts model, with empirical Bayes test statistics: 
 
@@ -91,56 +111,141 @@ I think "topTable" only retrieves the first column (which would be G5 to G0 comp
 ```{r}
 #build a linear model... 
 fit <- lmFit(gset, design)
-cont.matrix <- makeContrasts(G5-G0, G1-G0, G2-G0, G2-G1, G5-G2, levels=design) #for 4 groups: 0,1,2,5. 
+cont.matrix <- makeContrasts(G1-G0, G2-G0, G3-G0, G3-G2, G3-G1, levels=design) #for 4 groups: 0,1,2,5. 
 #^I think it is here you can group Blast Crisis and Accelerated groups into one and compare vs. control group!
 fit2 <- contrasts.fit(fit, cont.matrix)
 fit2 <- eBayes(fit2, 0.01)
 tT <- topTable(fit2, adjust="fdr", sort.by="B", number=250) #sort by the lods or B-statistic
 ```
 
-### Top 250 Most Differentially Expressed Genes in Pairwise Group Comparisons
+#### Top 250 Most Differentially Expressed Genes in Pairwise Group Comparisons
 View data for the 250 most statistically relevant genes that were differentially expressed in the following groups:
-* 0 is control CD34
-* 1 is Accelerated Phase
-* 2 is Blast Crisis
-* 5 is Chronic Phase
+* G0 is control CD34
+* G1 is Chronic Phase
+* G2 is Accelerated Phase
+* G3 is Blast Crisis
 
 This first round, I only did 5 pairwise contrasts for the following:
-G5 and G0 (chronic and control)
-G1 and G0 (accelerated and control)
-G2 and G0 (crisis and control)
-G2 and G1 (crisis vs accelerated. not expected to be largely different)
-G5 and G2 (chronic and blast crisis, least and most advanced disease states)
+G1 and G0 (chronic and control)
+G2 and G0 (accelerated and control)
+G3 and G0 (crisis and control)
+G3 and G2 (crisis vs accelerated. not expected to be largely different)
+G3 and G1 (chronic and blast crisis, least and most advanced disease states)
 
 ```{r}
 #by default, top table saves a dataframe with all columns of the gene feature data in the expression dataset. 
 #subset top table here down to only the columns we care about:
-subset(tT, select=c("P.Value","Gene.symbol","G5...G0","G1...G0","G2...G0","G2...G1","G5...G2","AveExpr","GO.Process"))
+subset(tT, select=c("P.Value","Gene.symbol"
+                    ,"G1...G0","G2...G0","G3...G0","G3...G2","G3...G1"
+                    ,"AveExpr"))
 ```
 
-Next, look at actual values for GAK in the 4 populations. 
-
-Is there a difference if we just do makeContrasts with 2 of the groups, instead of 4? (does the TopTable output differently for only 2 groups instead of 4?)
-  ^Then, maybe see if we should be splitting by CD34 vs blast crises only. And then maybe joining AP and BC together into a single group? Findings from first three will tell, hopefully, how to create better plots to show the differences there.
-
-
-
-Later:
-List the top 250 most (something) genes. GAK is p53 downstream! One of the biological processes for GAK is listed as Cell Cycle. I wonder . http://bioconductor.org/packages/release/bioc/vignettes/clusterProfiler/inst/doc/clusterProfiler.html#supported-ontologiespathways 
-
-Finally, see if can use a bioconductor package, such as clusterProfiler, to group the data into category by GO Biological process. IDK how I can split into "pathways" like "p53 related",etc. though. ClusterProfiler has nice visualizations, would be nice not to have to code those myself. 
-
-```{r}
-write.table(head(tT[1:10,], file=stdout(), row.names=FALSE, sep="\t"))
-```
-
+### Next, look at actual expression values for the top 3:
 Look up info on the top gene, GAK:
 
 ```{r paged.print=FALSE}
 #transpose the feature (gene) data for the GAK gene...
-t(gset@featureData@data[which(gset@featureData@data[["Gene.symbol"]] == "GAK")
+t(gset@featureData@data[with(gset@featureData@data,Gene.symbol=="GAK")
                         ,c("ID","Gene.symbol","Gene.title","Chromosome.location","GO.Process")])
 ```
+
+Look at expression values for some of the top genes. Accelerated and blast crisis groups are more similar to the healthy CD34 group than the chronic phase samples. Radich 2006 posits this is because advanced CML cells have moved past dependency on just these specific pathways.
+
+```{r}
+x = 1
+#instead of having to look up IDs, just take the xth value of the TopTable...
+plot(exprs(gset)[toString(tT[x,1]),] ~ fl #plot expressions for xth most differentially expressed gene
+     ,main = paste(tT[x,"Gene.symbol"] , " (#", x, " most significantly differentially expressed gene)")
+     ,xlab="Groups: G0 (Control), G1 (Chronic), G2 (Accelerated), G3 (Crises)",ylab=""
+     ,sub = paste("GO Process:",tT[x,"GO.Process"]))
+```
+
+
+
+```{r}
+x = 2
+#instead of having to look up IDs, just take the xth value of the TopTable...
+plot(exprs(gset)[toString(tT[x,1]),] ~ fl #plot expressions for xth most differentially expressed gene
+     ,main = paste(tT[x,"Gene.symbol"] , " (#", x, " most significantly differentially expressed gene)")
+     ,xlab="Groups: G0 (Control), G1 (Chronic), G2 (Accelerated), G3 (Crises)",ylab=""
+     ,sub = paste("GO Process:",tT[x,"GO.Process"]))
+```
+
+```{r}
+x = 3
+#instead of having to look up IDs, just take the xth value of the TopTable...
+plot(exprs(gset)[toString(tT[x,1]),] ~ fl #plot expressions for xth most differentially expressed gene
+     ,main = paste(tT[x,"Gene.symbol"] , " (#", x, " most significantly differentially expressed gene)")
+     ,xlab="Groups: G0 (Control), G1 (Chronic), G2 (Accelerated), G3 (Crises)",ylab=""
+     ,sub = paste("GO Process:",tT[x,"GO.Process"]))
+```
+
+```{r}
+x = 20
+#instead of having to look up IDs, just take the xth value of the TopTable...
+plot(exprs(gset)[toString(tT[x,1]),] ~ fl #plot expressions for xth most differentially expressed gene
+     ,main = paste(tT[x,"Gene.symbol"] , " (#", x, " most significantly differentially expressed gene)")
+     ,xlab="Groups: G0 (Control), G1 (Chronic), G2 (Accelerated), G3 (Crises)",ylab=""
+     ,sub = paste("GO Process:",tT[x,"GO.Process"]))
+```
+
+
+```{r}
+#CAMP, id 10012670444
+plot(exprs(gset)["10012670444",] ~ fl) #plot expressions for xth most differentially expressed gene
+
+```
+
+### Sidenote: What if we build a different contrast model? What if we do non pairwise contrasts?
+##### When making only 3 pairwise contrasts:G1-G0, G2-G0, G3-G0
+The top 3 returned into toptable are the same, but then some of the ordering is different. All of the statistics within the groups were unchanged, but it shows that "make contrasts -> top table" pulling in top table is based on all the differences within make contrasts. 
+
+```{r}
+#build a linear model... 
+fit_test <- lmFit(gset, design)
+cont.matrix <- makeContrasts(G1-G0, G2-G0, G3-G0, levels=design) 
+fit2_test <- contrasts.fit(fit_test, cont.matrix)
+fit2_test <- eBayes(fit2_test, 0.01)
+tT_test <- topTable(fit2_test, adjust="fdr", sort.by="B", number=250) #sort by the lods or B-statistic
+```
+
+```{r}
+subset(tT_test, select=c("P.Value","Gene.symbol"
+                         ,"G1...G0","G2...G0","G3...G0","AveExpr"))
+```
+
+Combining all disease-state samples and contrasting with the control, again the top 20 genes are roughly unchanged:
+
+```{r}
+fit_test <- lmFit(gset, design)
+cont.matrix <- makeContrasts((G1+G2+G3)/3-G0, G1-G0, levels=design) 
+fit2_test <- contrasts.fit(fit_test, cont.matrix)
+fit2_test <- eBayes(fit2_test, 0.01)
+tT_test <- topTable(fit2_test, adjust="fdr", sort.by="B", number=250) #sort by the lods or B-statistic
+```
+
+```{r}
+subset(tT_test, select=c("P.Value","Gene.symbol"
+                         ,"X.G1...G2...G3..3...G0","G1...G0","AveExpr"))
+```
+
+Why not follow Radich' lead: compare chronic with accelerated+blast crisis? But also subtract out healthy CD34 profile from the disease samples. 
+
+
+Later:
+List the top 250 most significantly differentially expressed genes. GAK is p53 downstream! One of the biological processes for GAK is listed as Cell Cycle. I wonder. CluterProfiler has a great overview of this 'gene set enrichment analysis', labeling with GO or KEGG and identyifying predominant biological themes.
+
+Manually choosing interesting clusters, and then perform "enrichment analysis" (annotate with function terms) is cumbersome. CluterProfiler compares and visualizes functional profiles among gene clusters.
+
+http://bioconductor.org/packages/release/bioc/vignettes/clusterProfiler/inst/doc/clusterProfiler.html#supported-ontologiespathways 
+
+Finally, see if can use a bioconductor package, such as clusterProfiler, to group the data into category by GO Biological process. IDK how I can split into "pathways" like "p53 related",etc. though. ClusterProfiler has nice visualizations, would be nice not to have to code those myself. 
+
+```{r}
+#write.table(head(tT[1:10,], file=stdout(), row.names=FALSE, sep="\t"))
+```
+
+
 
 
 ```{r}
