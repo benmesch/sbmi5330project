@@ -232,75 +232,14 @@ subset(tT_test, select=c("P.Value","Gene.symbol"
 Why not follow Radich' lead: compare chronic with accelerated+blast crisis? But also subtract out healthy CD34 profile from the disease samples. 
 
 
-Later:
-List the top 250 most significantly differentially expressed genes. GAK is p53 downstream! One of the biological processes for GAK is listed as Cell Cycle. I wonder. CluterProfiler has a great overview of this 'gene set enrichment analysis', labeling with GO or KEGG and identyifying predominant biological themes.
-
-Manually choosing interesting clusters, and then perform "enrichment analysis" (annotate with function terms) is cumbersome. CluterProfiler compares and visualizes functional profiles among gene clusters.
-
-http://bioconductor.org/packages/release/bioc/vignettes/clusterProfiler/inst/doc/clusterProfiler.html#supported-ontologiespathways 
-
-Finally, see if can use a bioconductor package, such as clusterProfiler, to group the data into category by GO Biological process. IDK how I can split into "pathways" like "p53 related",etc. though. ClusterProfiler has nice visualizations, would be nice not to have to code those myself. 
-
-
-
-#### From the documentation for DOSE...
-* We computed the ratios of geometric means of grade III samples versus geometric means of grade I samples. Logarithm of these ratios (base 2) were stored in geneList dataset.
-* that contained 200 samples, including 29 samples in grade I, 136 samples in grade II and 35 samples in grade III.
-
-```{r}
-library(breastCancerMAINZ)
-data(mainz)
-```
-
-```{r}
-grade.groups <- mainz@phenoData@data[,"grade"]
-grade.groups
-```
-
-```{r}
-test.exprs <- mainz@assayData[["exprs"]][,which(grade.groups == 1)]# | grade.groups == 3)]
-head(test.exprs)[,1:5]
-
-```
-```{r}
-geom.mean(test.exprs,na.rm=TRUE)
-```
-
-
-```{r}
-library(DOSE)
-data(geneList) #loads the pre-saved named vector "geneList", which is ordered by value. 
-#"In the following example, we selected fold change above 1 as the differential genes and analyzing their disease association."
-gene <- names(geneList)[abs(geneList) > 1.5]
-head(gene)
-```
-
-```{r}
-#Example use of DOSE() enrichment analysis
-x <- enrichDO(gene          = gene,
-              ont           = "DO",
-              pvalueCutoff  = 0.05,
-              pAdjustMethod = "BH",
-              universe      = names(geneList),
-              minGSSize     = 5,
-              maxGSSize     = 500,
-              qvalueCutoff  = 0.05,
-              readable      = FALSE)
-head(x)
-```
-#### The enrichDO function requires an entrezgene ID vector as input, mostly is the differential gene list of gene expression profile studies. If user needs to convert other gene ID type to entrezgene ID, we recommend using bitr function provided b
-
-
-```{r}
-gene2 <- names(geneList)[abs(geneList) < 3]
-ncg <- enrichNCG(gene2)
-head(ncg)
-```
-
-
 ```{r}
 #write.table(head(tT[1:10,], file=stdout(), row.names=FALSE, sep="\t"))
 ```
+
+
+
+
+
 
 
 
