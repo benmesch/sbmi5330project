@@ -2,7 +2,7 @@
 title: "Exploring ClusterProfiler"
 output: html_notebook
 ---
-
+Ben Mescher
 
 Later:
 List the top 250 most significantly differentially expressed genes. GAK is p53 downstream! One of the biological processes for GAK is listed as Cell Cycle. I wonder. CluterProfiler has a great overview of this 'gene set enrichment analysis', labeling with GO or KEGG and identyifying predominant biological themes.

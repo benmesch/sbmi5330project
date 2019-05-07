@@ -2,6 +2,7 @@
 title: "Project Name Here"
 output: html_notebook
 ---
+Ben Mescher
 
 Preliminary goals:
 Familiarize with the GEOquery and BioConductor data structure for microarray expression data. 
@@ -30,11 +31,16 @@ suppressMessages(library(limma))
 
 ```{r}
 #Download GEO data for GSE4170 into a table "gset". 19MB
-suppressMessages(gset <- getGEO("GSE4170", GSEMatrix =TRUE, AnnotGPL=TRUE))
+suppressMessages(gset <- getGEO("GSE4170", GSEMatrix =TRUE, AnnotGPL=TRUE)) 
+#Pull column names from the platform for this experiment: Rosetta/Merck Human 25k v2.2.1 microarray (GPL2029)
+#getGEO returns a list of experiments. we are only interested the 1st (and only) one, so set gset = gset[[1]]
+if (length(gset) > 1) idx <- grep("GPL2029", attr(gset, "names")) else idx <- 1
+gset <- gset[[idx]]
+
 gset
 ```
 
-The microarray expression values range from -2 to +2. With the median at 00.54: 
+The microarray expression values range from -2 to +2. With the median at 00.54, I believe these are all log10 of the microarray.
 ```{r}
 quantile(exprs(gset), c(0., 0.25, 0.5, 0.75, 0.99, 1.0), na.rm=T)
 ```
@@ -46,11 +52,6 @@ Perform some pre-processing of the data, formating column names and such. This c
 ```
 
 ```{r, echo=FALSE}
-#Pull column names from the platform for this experiment: Rosetta/Merck Human 25k v2.2.1 microarray (GPL2029)
-#not used though, for this particular platform
-if (length(gset) > 1) idx <- grep("GPL2029", attr(gset, "names")) else idx <- 1
-gset <- gset[[idx]]
-
 # make proper column names to match toptable (most are ok like "ID", "GO.Function.ID". This escapes those character names just in case)
 fvarLabels(gset) <- make.names(fvarLabels(gset))
 
@@ -71,7 +72,7 @@ sel <- which(sml != "X")
 sml <- sml[sel]
 gset <- gset[ ,sel]
 
-# log2 transform. code provided by default by GEO2R, but I think the Radich 2006 is already log2, so this doesnt do anything to the Radich 2006 expression values. Commenting this out.
+# log2 transform. code provided by default by GEO2R, but I think the Radich 2006 is already log10, so this doesnt do anything to the Radich 2006 expression values. Commenting this out.
 #ex <- exprs(gset)
 #qx <- as.numeric(quantile(ex, c(0., 0.25, 0.5, 0.75, 0.99, 1.0), na.rm=T))
 #LogC <- (qx[5] > 100) ||
@@ -138,6 +139,10 @@ G3 and G1 (chronic and blast crisis, least and most advanced disease states)
 subset(tT, select=c("P.Value","Gene.symbol"
                     ,"G1...G0","G2...G0","G3...G0","G3...G2","G3...G1"
                     ,"AveExpr"))
+```
+
+```{r}
+tT
 ```
 
 ### Next, look at actual expression values for the top 3:
@@ -238,10 +243,201 @@ Why not follow Radich' lead: compare chronic with accelerated+blast crisis? But 
 
 
 
+```{r}
+#exprs(gset)
+#gset@phenoData@data
+#gset$description
+##dim(gset@assayData[["exprs"]]) #24481 x 117
+
+g0.means <- rowMeans(exprs(gset)[,which(sml=="G0")])
+g1.means <- rowMeans(exprs(gset)[,which(sml=="G1")])
+g3.means <- rowMeans(exprs(gset)[,which(sml=="G3")])
+
+```
+
+```{r}
+#create gene list
+gene.list.3.1 <- 10^g3.means / 10^g1.means #raw values are all log10 transormed. undo that.
+#gene.list.3.1 <- sort(gene.list.3.1, decreasing=TRUE)
+gene.list.3.1 <- log(gene.list.3.1, base=2)
+
+
+gene.list.1.0 <- 10^g1.means / 10^g0.means #raw values are all log10 transormed. undo that.
+gene.list.1.0 <- log(gene.list.1.0, base=2)
+```
+
+
+```{r}
+#before passing into the enrichment functions, need to translate proprietary (platform) ids into Entrez gene ids
+platform.ids <- names(gene.list.1.0)
+#platform.ids
+#platform.ids[1:30]
+
+test.gene.list <- gene.list.1.0[gset@featureData@data[,"Gene.ID"] != ""]
+test.gene.list[1:10]
+test.gene.names <- gset@featureData@data[,c("ID","Gene.ID")][gset@featureData@data[,"Gene.ID"] != "",2]
+test.gene.names[1:10]
+
+## feature 1: numeric vector
+test = test.gene.list
+## feature 2: named vector
+names(test) = test.gene.names
+## feature 3: decreasing order
+test = sort(test, decreasing = TRUE)
+
+#gset@featureData@data[,"Gene.ID"] != ""
+#which(apply(gset@featureData@data[,"Gene.ID"],1,length) > 0)[1:30]
+test[1:30]
+```
+
+
+so there were a lot of NA rows in the genelist i created. 3k of 18k had to be removed because they were na! Was messing with the enrichment functions.
+
+```{r}
+test <- test[!is.na(test)]
+#test[15250:15500] #what is 100128545 doing here??? ...gues it's a legit gene ID
+#uhh.... I should get rid of all of these NA values!!!
+#good source: https://github.com/GuangchuangYu/DOSE/wiki/how-to-prepare-your-own-geneList
+```
+
+
+### Ok, now lets try some enrichment...
+
+```{r}
+library(clusterProfiler)
+library(org.Hs.eg.db) 
+library(DOSE)
+```
+
+```{r}
+plot(test)
+```
 
 
 
 
+
+
+```{r}
+gene <- names(test)[abs(test) > 2]
+ggo <- groupGO(gene     = gene,
+               OrgDb    = org.Hs.eg.db,
+               ont      = "MF",
+               level    = 2,
+               readable = TRUE)
+#order by count
+ggo@result = ggo@result[order(ggo@result[,"Count"],decreasing=TRUE),]
+ggo@result
+```
+
+```{r}
+barplot(ggo,showCategory=8)
+```
+
+
+```{r}
+gene <- names(test)[abs(test) > 2]
+ggo <- groupGO(gene     = gene,
+               OrgDb    = org.Hs.eg.db,
+               ont      = "MF",
+               level    = 3,
+               readable = TRUE)
+#order by count
+ggo@result = ggo@result[order(ggo@result[,"Count"],decreasing=TRUE),]
+ggo@result
+```
+
+
+```{r}
+barplot(ggo,showCategory=12)
+```
+
+
+```{r}
+gene <- names(test)[abs(test) > 2]
+ggo <- groupGO(gene     = gene,
+               OrgDb    = org.Hs.eg.db,
+               ont      = "BP",
+               level    = 3,
+               readable = TRUE)
+
+#order by count
+ggo@result = ggo@result[order(ggo@result[,"Count"],decreasing=TRUE),]
+ggo@result
+```
+
+
+```{r}
+barplot(ggo,showCategory=12)
+```
+
+
+Further information about enirchment scores:
+https://yulab-smu.github.io/clusterProfiler-book/chapter2.html#gene-set-enrichment-analysis
+
+```{r}
+#KEGG Gene Set Enrichment Analysis
+kk2 <- gseKEGG(geneList     = test,
+               organism     = 'hsa',
+               nPerm        = 1000,
+               minGSSize    = 100,
+               pvalueCutoff = 0.05,
+               verbose      = FALSE)
+kk2@result = kk2@result[order(kk2@result[,"setSize"],decreasing=TRUE),]
+kk2@result
+```
+
+```{r}
+#KEGG over representation Analysis
+kk3 <- enrichKEGG(gene    = names(test),
+               organism     = 'hsa',
+               pvalueCutoff = 0.05
+  )
+kk3@result[,c("Description","GeneRatio","p.adjust","Count")]
+```
+
+
+```{r}
+plot(kk2@result[,"setSize"])
+```
+
+
+
+```{r}
+library(GSEABase)
+library(tidyr)
+```
+
+```{r}
+gene <- names(test)[abs(test) > 2]
+
+wpgmtfile <- system.file("extdata", "wikipathways-20180810-gmt-Homo_sapiens.gmt", package="clusterProfiler")
+wp2gene <- read.gmt(wpgmtfile) #i had to install GSEAbase first ??
+wp2gene <- wp2gene %>% tidyr::separate(ont, c("name","version","wpid","org"), "%")
+wpid2gene <- wp2gene %>% dplyr::select(wpid, gene) #TERM2GENE
+wpid2name <- wp2gene %>% dplyr::select(wpid, name) #TERM2NAME
+
+ewp <- enricher(gene, TERM2GENE = wpid2gene, TERM2NAME = wpid2name)
+ewp <- setReadable(ewp, org.Hs.eg.db, keyType = "ENTREZID")
+ewp@result = ewp@result[order(ewp@result[,"Count"],decreasing=TRUE),]
+ewp@result
+```
+
+```{r}
+barplot(ewp,showCategory=12)
+```
+
+
+```{r}
+ewp2 <- GSEA(test, TERM2GENE = wpid2gene, TERM2NAME = wpid2name, verbose=FALSE)
+ewp2 <- setReadable(ewp2, org.Hs.eg.db, keyType = "ENTREZID")
+ewp2@result = ewp2@result[order(ewp2@result[,"setSize"],decreasing=TRUE),]
+ewp2@result
+```
+
+```{r}
+gset@featureData@data[which(gset@featureData@data[,"Gene.ID"]==100128545),c("ID","Gene.ID")]
+```
 
 
 ```{r}
