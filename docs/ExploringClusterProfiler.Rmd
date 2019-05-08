@@ -1,0 +1,285 @@
+---
+title: "Exploring ClusterProfiler"
+output: html_notebook
+---
+Ben Mescher
+
+Later:
+List the top 250 most significantly differentially expressed genes. GAK is p53 downstream! One of the biological processes for GAK is listed as Cell Cycle. I wonder. CluterProfiler has a great overview of this 'gene set enrichment analysis', labeling with GO or KEGG and identyifying predominant biological themes.
+
+Manually choosing interesting clusters, and then perform "enrichment analysis" (annotate with function terms) is cumbersome. CluterProfiler compares and visualizes functional profiles among gene clusters.
+
+http://bioconductor.org/packages/release/bioc/vignettes/clusterProfiler/inst/doc/clusterProfiler.html#supported-ontologiespathways 
+
+Finally, see if can use a bioconductor package, such as clusterProfiler, to group the data into category by GO Biological process. IDK how I can split into "pathways" like "p53 related",etc. though. ClusterProfiler has nice visualizations, would be nice not to have to code those myself. 
+
+
+## First, run through examples with the provided dataset. Starting with trying to figure out how it was calculated:
+#### From the documentation for DOSE...
+* We computed the ratios of geometric means of grade III samples versus geometric means of grade I samples. Logarithm of these ratios (base 2) were stored in geneList dataset.
+* that contained 200 samples, including 29 samples in grade I, 136 samples in grade II and 35 samples in grade III.
+
+```{r}
+library(breastCancerMAINZ)
+data(mainz)
+```
+
+
+
+```{r}
+#...this is how i THOUGHT a geometric mean should be calculated. but its totally not what the example code for creating sample dataset for DOSE package did!
+
+#grade.groups <- mainz@phenoData@data[,"grade"] #simpler way: pData(mainz)$grade
+#grade.groups
+#length(grade.groups)
+
+#test.exprs <- mainz@assayData[["exprs"]][,grade.groups == 1]# | grade.groups == 3)]
+#head(test.exprs)[,1:5]
+#denom <- (1/length(which(grade.groups == 1)))[1]
+#x <- as.matrix(as.matrix(apply(test.exprs,1,prod))^denom)
+#x[1:5]
+
+#test.exprs2 <- mainz@assayData[["exprs"]][,grade.groups == 3]# | grade.groups == 3)]
+#head(test.exprs2)[,1:5]
+#denom2 <- (1/length(which(grade.groups == 3)))[1]
+#y <- as.matrix(as.matrix(apply(test.exprs2,1,prod))^denom2)
+#y[1:5]
+#z <- as.matrix(log2(y / x))
+
+
+#test.exprs["204475_at",]
+#test.exprs2["204475_at",]
+
+```
+
+
+
+
+```{r}
+x["204475_at",1]
+y["204475_at",1]
+#what is gene 4312? 204475_at
+#value in "genelist" example data...4.572613
+
+y["204475_at",1] / x["204475_at",1]
+log2(4.97)
+log2(8.3)
+```
+```{r}
+#geneList #2nd gene was 8318, with a ratio of 4.514
+#id is 204126_s_at
+x["204126_s_at",1]
+y["204126_s_at",1]
+y["204126_s_at",1] / x["204126_s_at",1]
+log2(1.78)
+#still not able to really recreate the sample datasets values? 
+
+```
+```{r}
+log2(y/x)["204126_s_at",]
+#as.matrix(sort(as.matrix(log2(y/x)),decreasing=TRUE ))
+```
+
+
+```{r}
+#head(log2(y / x))
+plot(mainz@assayData[["exprs"]]["204475_at",] ~ grade.groups) #first gene in genelist (stg 3 higher)
+plot(mainz@assayData[["exprs"]]["219197_s_at",] ~ grade.groups) #one of the last genes in geneLIst (stg 1 higher)
+plot(mainz@assayData[["exprs"]]["1007_s_at",] ~ grade.groups) #first row in expression source data
+
+#mainz@assayData[["exprs"]][,grade.groups == 1]["204475_at",]
+```
+
+```{r}
+(y[1:10])
+(x[1:10])
+plot((log2(y / x)))
+```
+
+
+## So, I was way off above! (trying to figure out how the test dataset was calculated)
+
+```{r}
+as.matrix(geneList[1:5]) #when you use the subscript slice... doesnt display with the names, unless you use "as.matrix"!!!
+as.matrix(geneList[12485:12495])
+```
+
+#### A challenge is to always use the internal IDs, not the entrez ID. Even came up here, when looking at the toy dataset for Mainz!
+#### after locaitng a gene to debug and compare results... had to use lots of plots to see distribution of values (was this dataset already normalized? etc.)
+
+
+```{r}
+# FINALLY, mapped back to internal id: 204475_at from entrez id for MMP1
+mainz@featureData@data[which(data.frame(mainz@featureData@data)[,"Gene.ID"]=="4312"),]
+mainz@featureData@data[which(data.frame(mainz@featureData@data)[,"Gene.ID"]=="57758"),]
+mainz@featureData@data[which(data.frame(mainz@featureData@data)[,"Gene.ID"]=="8318"),]
+```
+
+
+```{r}
+#this is the internal ID of the Radich data for MMP1. Useless, but at first i was confused and thought the internal IDs in the mainz somehow was connected to some GO label that I would have to look up in Radich dataset
+gset@featureData@data[data.frame(gset@featureData@data)[,"Gene.ID"]=="4312",]
+```
+
+```{r}
+gset@featureData@data[data.frame(gset@featureData@data)[,"Gene.ID"]=="4312",]
+```
+
+
+
+Looking at the actual test dataset "geneList", it appears to be distributed starting at +4.5
+
+https://github.com/GuangchuangYu/DOSE/wiki/how-to-prepare-your-own-geneList
+
+```{r}
+library(DOSE)
+data(geneList) #loads the pre-saved named vector "geneList", which is ordered by value. 
+#"In the following example, we selected fold change above 1 as the differential genes and analyzing their disease association."
+gene <- names(geneList)[abs(geneList) > 1.5]
+head(geneList)
+```
+
+```{r}
+plot(geneList)
+```
+#### later: found source code used to actually create the geneList!!!
+* Formula they used for "geometic means" is not what I expected
+* Also, most of the work here is converting from internal to Entrez IDs (though nowadays, you could use the bitr function for that! maybe?)
+* raw data creates 22k elements. but only 12k have a labeled entrez ID and get saved to the final dataset!
+* https://github.com/GuangchuangYu/DOSE/blob/master/inst/extdata/preparing.geneList.R
+
+```{r}
+clmainz=pData(mainz)$grade
+
+dd <- exprs(mainz)
+g1 <- dd[,clmainz == 1]
+g3 <- dd[,clmainz == 3]
+#interesting how they calculate the geometric mean as log2(e^mean of every row / e^mean of every row)...
+#rowMeans(g3)["204475_at"]
+#rowMeans(g1)["204475_at"]
+#^^result is 8.6 and 5.49, when you do "exp" of both, the log2 is ~4+ !!
+geneListExample <- exp(rowMeans(g3))/exp(rowMeans(g1))
+geneListExample <- sort(geneListExample, decreasing=TRUE)
+geneListExample <- log(geneListExample, base=2)
+head(geneListExample)
+#^creates numeric list (named), but the names are all the internal IDs (204475_at, not Entrez ID integers)
+
+#the rest of the code is to replace internal IDs like "204475_at" with the entrez integer IDs (from hgu133a file)
+#this is from github, years ago. clusterProfiler uses a somewhat newer method to do this: bitr()
+#require("hgu133a.db")
+#require(siggenes)
+#eg <- mget(names(geneList), hgu133aENTREZID, ifnotfound=NA) #supposed to retreive entrez ids
+#gg <- data.frame(probe=names(geneList), val = geneList)
+#eg.df <- data.frame(probe=names(eg), eg=unlist(eg))
+#
+#xx <- merge(gg, eg.df, by.x="probe", by.y="probe")
+#xx <- xx[,-1]
+#xx <- unique(xx)
+#xx <- xx[!is.na(xx[,2]),]
+#
+#require(plyr)
+#yy <- ddply(xx, .(eg), function(x) data.frame(val=mean(x$val)))
+#
+#geneList <- yy$val
+#names(geneList) <- yy$eg
+#geneList <- sort(geneList, decreasing=TRUE)
+#
+#save(geneList, file="geneList.rda")
+
+```
+
+
+```{r}
+#Example use of DOSE() enrichment analysis
+gene <- names(geneList)[abs(geneList) > 1.5]
+x <- enrichDO(gene          = gene,
+              ont           = "DO",
+              pvalueCutoff  = 0.05,
+              pAdjustMethod = "BH",
+              universe      = names(geneList),
+              minGSSize     = 5,
+              maxGSSize     = 500,
+              qvalueCutoff  = 0.05,
+              readable      = TRUE)
+head(x)
+```
+
+#### "The enrichDO function requires an entrezgene ID vector as input, mostly is the differential gene list of gene expression profile studies."
+If user needs to convert other gene ID type to entrezgene ID, we recommend using bitr function provided by clusterProfiler.
+
+```{r}
+#example from clusterProfile, for GO enrichment analysis...
+library(clusterProfiler)
+library(org.Hs.eg.db) #had to install separately
+```
+
+```{r}
+gene <- names(geneList)[abs(geneList) > 2]
+ggo <- groupGO(gene     = gene,
+               OrgDb    = org.Hs.eg.db,
+               ont      = "CC",
+               level    = 3,
+               readable = TRUE)
+head(ggo)
+```
+
+```{r}
+#KEGG Gene Set Enrichment Analysis
+kk2 <- gseKEGG(geneList     = geneList,
+               organism     = 'hsa',
+               nPerm        = 1000,
+               minGSSize    = 120,
+               pvalueCutoff = 0.05,
+               verbose      = FALSE)
+head(kk2)
+```
+
+
+```{r}
+gene <- names(geneList)[abs(geneList) < 3]
+ncg <- enrichNCG(gene)
+head(ncg)
+```
+
+```{r}
+mkk2 <- gseMKEGG(geneList = geneList)
+head(mkk2)
+```
+#### In contrast to KEGG, WikiPathways is a continuously updated pathway database curated by a community of researchers and pathway enthusiasts.
+I like WikiPathways because it has "RB pathway" in it. 
+
+```{r}
+library(GSEABase)
+library(tidyr)
+```
+
+```{r}
+wpgmtfile <- system.file("extdata", "wikipathways-20180810-gmt-Homo_sapiens.gmt", package="clusterProfiler")
+wp2gene <- read.gmt(wpgmtfile) #i had to install GSEAbase first ??
+wp2gene <- wp2gene %>% tidyr::separate(ont, c("name","version","wpid","org"), "%")
+wpid2gene <- wp2gene %>% dplyr::select(wpid, gene) #TERM2GENE
+wpid2name <- wp2gene %>% dplyr::select(wpid, name) #TERM2NAME
+
+ewp <- enricher(gene, TERM2GENE = wpid2gene, TERM2NAME = wpid2name)
+ewp <- setReadable(ewp, org.Hs.eg.db, keyType = "ENTREZID")
+head(ewp)
+```
+
+```{r}
+#another wikipathways, this one has the PI3k/Akt/mTor pathway in it!
+ewp2 <- GSEA(geneList, TERM2GENE = wpid2gene, TERM2NAME = wpid2name, verbose=FALSE)
+ewp2 <- setReadable(ewp2, org.Hs.eg.db, keyType = "ENTREZID")
+head(ewp2)
+```
+
+#### finally, try some visualizations from ClusterProfiler...
+
+```{r}
+barplot(ggo, drop=TRUE, showCategory=12)
+gseaplot(mkk2, geneSetID = "hsa04145")
+```
+
+
+
+* unreleated enrichment resource, talking about evolutionary stuff: https://cran.r-project.org/web/packages/myTAI/vignettes/Expression.html
+* https://cran.r-project.org/web/packages/myTAI/vignettes/Enrichment.html
